@@ -1,0 +1,382 @@
+---
+title: "NYPD Shooting Incident Report"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-11-08"
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(gtsummary)
+library(car)
+library(scales)
+library(ggrepel)
+```
+
+
+# Project goals
+
+As a big metropolitan city, New York City (NYC) suffers from high crime rates and especially shooting incidents. Gun violence affects thousands of people every years in NYC, so understanding the trend and distribution of shooting incidents might help policymakers and the police to prevent and reduce its impact. This project uses the shooting incident reports to explore the trends of gun violence in NYC. There are 2 main questions I want to find with this project.
+
+First, which area in NYC has the highest number of shooting incidents? This would reflect the safety and socioeconomic status in different boroughs in NYC.
+
+Moreover, which group of people are more vulnerable to shooting incidents? This question looks at the demographics of the shooting victims and determine which group has a significantly higher number of victims. This analysis would help us gain insight on the nature of criminal activities in NYC.
+
+# Import data
+
+This data recorded every shooting incident reported from 2006 to the end of 2022 in NYC. The data includes the location and time of incidents, demographics information on victims and perpetrators, and victims survival. The data set is publicly available through data.gov.  
+
+```{r get_nypd_data}
+#Get url for the dataset
+url_in<-"https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+#Import the dataset
+nypd <- read.csv(url_in)
+```
+
+
+# Tidy and transform Data
+
+## Transform the data
+
+### Shooting incident and death by occurrence date
+
+Shooting incidents and deaths are extracted from the data set. Then, I compiled the incidents by occurrence date for further analysis. Information on occurrence date, victim survival, and location are included in this data table. Detailed steps are shown below.
+
+```{r tidy_nypd_occ, message=FALSE}
+#Remove columns not needed and change date types
+nypd_1<-nypd %>% select(OCCUR_DATE,BORO,STATISTICAL_MURDER_FLAG) %>% mutate(OCCUR_DATE= mdy(OCCUR_DATE))
+
+#Find total number of cases in each Borough each date
+Cases<-nypd_1 %>% 
+  group_by(OCCUR_DATE,BORO) %>% # grouped by date and borough
+  summarize(Shooting = n()) %>% 
+  ungroup()
+
+#Find total number of deaths in each Borough each date
+Deaths<-nypd_1[nypd_1$STATISTICAL_MURDER_FLAG == "true", ] %>% 
+  group_by(OCCUR_DATE,BORO) %>%  # grouped by date and borough
+  summarize(Death = n()) %>% 
+  ungroup()
+
+#Combine the 2 datasets to find total number of deaths and cases
+nypd_Cases_Deaths <- merge(Cases, Deaths, by = c("OCCUR_DATE","BORO"),all.x = TRUE) 
+nypd_Cases_Deaths[is.na(nypd_Cases_Deaths)] <- 0
+
+```
+
+### Shooting incidents and death by victim demographics
+
+I also compiled the number of shooting incidents and deaths by victim demographics. The demographics information includes victim's races/ethnicities, age groups, and sexes. Victims' races have 6 categories: American Indian/Alaskan Native, Asian/Pacific Islander, Black, Black Hispanic, White, and White Hispanic. Victims' sexes include Male and Female. Victims' age groups include <18, 18-24, 25-44, 45-64, and 65+. Missing data on victim demographics are removed from the data set. Detailed method is below.
+
+```{r tidy_nypd_race,message=FALSE}
+#Remove columns not needed
+nypd_2<-nypd %>% select(STATISTICAL_MURDER_FLAG,VIC_RACE,VIC_SEX,VIC_AGE_GROUP)
+nypd_2<-subset(nypd_2, nypd_2$VIC_RACE != "UNKNOWN" & nypd_2$VIC_SEX != "U" & nypd_2$VIC_AGE_GROUP != "UNKNOWN" & nypd_2$VIC_AGE_GROUP != "1022") #Remove rows with unknown victim race, sex, and age group
+
+#Find total number of cases in each Borough for each racial group
+Cases<-nypd_2 %>% 
+  group_by(VIC_RACE,VIC_SEX,VIC_AGE_GROUP) %>% # grouped by victim race and borough
+  summarize(Shooting = n()) %>% 
+  ungroup()
+
+#Find total number of deaths in each Borough for each racial group
+Deaths<-nypd_2[nypd_2$STATISTICAL_MURDER_FLAG == "true", ] %>% 
+  group_by(VIC_RACE,VIC_SEX,VIC_AGE_GROUP) %>%  # grouped by victim race and borough
+  summarize(Death = n()) %>% 
+  ungroup()
+
+#Combine the 2 datasets to find total number of deaths and cases 
+nypd_vic_demo <- merge(Cases, Deaths, by = c("VIC_RACE","VIC_SEX","VIC_AGE_GROUP"),all.x = TRUE) 
+nypd_vic_demo[is.na(nypd_vic_demo)] <- 0
+```
+
+## Data summary
+
+Let's take a quick look at the summary of the 2 compiled data sets.
+
+```{r summary}
+#Look at the summary of the data
+summary(nypd_Cases_Deaths)
+
+summary(nypd_vic_demo)
+
+```
+
+
+# Visualize the data
+
+## Overview of shooting and death in NYC
+
+I plotted the new shooting incidents and deaths from 2006 to 2023 to see if there are any abnormalities in the data. I also plotted the total incidents and deaths over time. The plots look normal and as expected.
+
+```{r Shooting_Death_date,fig.show="hold", out.width="50%"}
+#New shooting incidents and deaths in New York City
+NYC_new <- nypd_Cases_Deaths %>% 
+  group_by(OCCUR_DATE) %>%
+  summarise(Shooting = sum(Shooting), Death = sum(Death)) %>%
+  ungroup()
+
+#Plot new incidents
+NYC_new %>%
+  ggplot(aes(x=OCCUR_DATE, y=Shooting))+
+  geom_line(aes(color= "Shooting Incident"))+
+  geom_line(aes(y=Death, color= "Deaths"))+
+  xlab("Occurrence Date")+
+  ylab("Incidents")+
+  labs(color=NULL,title = "New incidents of Shooting in NYC")+
+  scale_x_date(date_breaks="2 years",date_labels = "%Y")
+
+#Total shooting incidents and deaths in New York City
+NYC_totals <- NYC_new %>% 
+  reframe(OCCUR_DATE= OCCUR_DATE, Shooting = cumsum(Shooting), Death = cumsum(Death))
+
+#Plot total incidents
+NYC_totals %>%
+  ggplot(aes(x=OCCUR_DATE, y=Shooting))+
+  geom_line(aes(color= "Shooting Incident"))+
+  geom_point(aes(color= "Shooting Incident"))+
+  geom_line(aes(y=Death, color= "Deaths"))+
+  geom_point(aes(y=Death, color= "Deaths"))+
+  xlab("Occurrence Date")+
+  ylab("Incidents")+
+  labs(color=NULL,title = "Total incidents of Shooting in NYC")+
+  scale_x_date(date_breaks="2 years",date_labels = "%Y")
+
+```
+
+
+## Total shooting incidents and deaths by borough
+
+The total shooting incidents and deaths by different boroughs in NYC over time are shown in the plots below. 
+
+```{r total_incidents_borough,fig.show="hold", out.width="50%"}
+
+#Total shooting incidents and deaths in New York City by borough
+NYC_totals_boro <- nypd_Cases_Deaths %>% 
+  group_by(BORO) %>%
+  reframe(OCCUR_DATE= OCCUR_DATE,BORO= BORO, Shooting = cumsum(Shooting), Death = cumsum(Death)) %>%
+  ungroup()
+
+par(mar = c(4, 4, .1, .1))
+
+#Plot shooting incidents
+NYC_totals_boro %>%
+  ggplot(aes(x=OCCUR_DATE, y=Shooting))+
+  geom_line(aes(color= BORO))+
+  geom_point(aes(color= BORO))+
+  xlab("Occurrence Date")+
+  ylab("Incidents")+
+  labs(color= "Borough",title = "Total incidents of Shooting in NYC")+
+  scale_x_date(date_breaks="2 years",date_labels = "%Y")
+
+#Plot shooting deaths
+NYC_totals_boro %>%
+  ggplot(aes(x=OCCUR_DATE, y=Death))+
+  geom_line(aes(color= BORO))+
+  geom_point(aes(color= BORO))+
+  xlab("Occurrence Date")+
+  ylab("Deaths")+
+  labs(color= "Borough",title = "Total Shooting deaths in NYC")+
+  scale_x_date(date_breaks="2 years",date_labels = "%Y")
+
+```
+
+From these plots, we can see that from 2006 to 2022, the number of shooting incidents was highest in Brooklyn, followed by Bronx, Queens, Manhattan, and Staten Island. 
+
+The total number of shooting deaths also followed the same trend.
+
+
+## Total shooting incidents and Deaths by victim race/ethnicity
+
+I plotted the total number of shooting victims by their races/ethnicities below.
+
+```{r total_shooting_race,fig.show="hold", out.width="50%"}
+#Compile the data frame for victim race
+nypd_race <- nypd_vic_demo %>% group_by(VIC_RACE) %>%
+     summarize(Shooting = sum(Shooting), Death= sum(Death))
+
+#Calculate the position of text annotation in pie chart
+nypd_race_pos <- nypd_race %>% 
+  mutate(pos_Shooting = Shooting/2 + lead(rev(cumsum(rev(Shooting))), 1),
+         pos_Shooting = if_else(is.na(pos_Shooting), Shooting/2, pos_Shooting),
+         pos_Death = Death/2 + lead(rev(cumsum(rev(Death))), 1),
+         pos_Death = if_else(is.na(pos_Death), Death/2, pos_Death))
+
+par(mar = c(4, 4, .1, .1))
+#Plot Shooting incidents
+ggplot(nypd_race, aes(x="", y=Shooting, fill=VIC_RACE)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  labs(fill="Victim race",title = "Shooting incidents by victim race")+
+  geom_label_repel(data = nypd_race_pos,
+                   aes(y = pos_Shooting, label = Shooting),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+#Plot Shooting Deaths
+ggplot(nypd_race, aes(x="", y=Death, fill=VIC_RACE)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  labs(fill="Victim race",title = "Shooting deaths by victim race")+
+  geom_label_repel(data = nypd_race_pos,
+                   aes(y = pos_Death, label = Death),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+```
+
+We can see from the plots that non-Hispanic Black victims have the highest number and account for the majority of all shooting victims. The number of deaths in non-Hispanic Black group is also the highest. This is followed by Hispanic Blacks, Hispanic Whites, non-Hispanic Whites, Asians, and American Indians. In all the groups, American Indians/ Alaskan Natives have the smallest number of 10 incidents and no deaths. 
+
+## Total shooting incidents and Deaths by victim sex
+
+The plots showing total number of shooting incidents and deaths by victims' sexes are below.
+
+```{r total_shooting_sex,fig.show="hold", out.width="50%"}
+#Compile the data frame for victim sex
+nypd_sex <- nypd_vic_demo %>% group_by(VIC_SEX) %>%
+     summarize(Shooting = sum(Shooting), Death= sum(Death))
+
+#Calculate the position of text annotation in pie chart
+nypd_sex_pos <- nypd_sex %>% 
+  mutate(pos_Shooting = Shooting/2 + lead(rev(cumsum(rev(Shooting))), 1),
+         pos_Shooting = if_else(is.na(pos_Shooting), Shooting/2, pos_Shooting),
+         pos_Death = Death/2 + lead(rev(cumsum(rev(Death))), 1),
+         pos_Death = if_else(is.na(pos_Death), Death/2, pos_Death))
+
+par(mar = c(4, 4, .1, .1))
+#Plot Shooting incidents
+ggplot(nypd_sex, aes(x="", y=Shooting, fill=VIC_SEX)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  scale_fill_discrete( labels = c("Female", "Male"))+
+  labs(fill="Victim sex",title = "Shooting incidents by victim sex")+
+  geom_label_repel(data = nypd_sex_pos,
+                   aes(y = pos_Shooting, label = Shooting),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+#Plot Shooting Deaths
+ggplot(nypd_sex, aes(x="", y=Death, fill=VIC_SEX)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  scale_fill_discrete( labels = c("Female", "Male"))+
+  labs(fill="Victim sex",title = "Shooting deaths by victim sex")+
+  geom_label_repel(data = nypd_sex_pos,
+                   aes(y = pos_Death, label = Death),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+```
+
+The plots show that the majority of shooting victims and deaths were males. The number of male victims is greater then the number of their female counterparts. The number of shooting deaths also followed the same trend.
+
+## Total shooting incidents and Deaths by victim age group
+
+I also plotted the total number of shooting incidents and deaths by victims' age groups to explore which age group is most vulnerable to shooting.
+
+```{r total_shooting_age,fig.show="hold", out.width="50%"}
+#Compile the data frame for victim race
+nypd_age <- nypd_vic_demo %>% group_by(VIC_AGE_GROUP) %>%
+     summarize(Shooting = sum(Shooting), Death= sum(Death))
+nypd_age<-nypd_age[c(5,1:4),] #Reorder the age groups
+
+#Calculate the position of text annotation in pie chart
+nypd_age_pos <- nypd_age %>% 
+  mutate(pos_Shooting = Shooting/2 + lead(rev(cumsum(rev(Shooting))), 1),
+         pos_Shooting = if_else(is.na(pos_Shooting), Shooting/2, pos_Shooting),
+         pos_Death = Death/2 + lead(rev(cumsum(rev(Death))), 1),
+         pos_Death = if_else(is.na(pos_Death), Death/2, pos_Death))
+
+par(mar = c(4, 4, .1, .1))
+#Plot Shooting incidents
+ggplot(nypd_age, aes(x="", y=Shooting, fill=VIC_AGE_GROUP)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  labs(fill="Victim age group",title = "Shooting incidents by victim age group")+
+  geom_label_repel(data = nypd_age_pos,
+                   aes(y = pos_Shooting, label = Shooting),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+#Plot Shooting Deaths
+ggplot(nypd_age, aes(x="", y=Death, fill=VIC_AGE_GROUP)) +
+  geom_bar(stat="identity", width=1,color="white") +
+  coord_polar("y", start=0)+
+  theme_void()+
+  labs(fill="Victim age group",title = "Shooting deaths by victim age group")+
+  geom_label_repel(data = nypd_age_pos,
+                   aes(y = pos_Death, label = Death),
+                   size = 4, nudge_x = 0.5, show.legend = FALSE)
+
+```
+
+From the plots, we can see that the number of shooting victims from 25 to 44 years old is the highest. This is followed by the 18-24 years, below 18, 45-64 years, and above 65 years age groups. The number of victims 65 or above is the smallest compared to other age groups. The number of deaths also follows the same trend. However, the number of deaths 25-44 years accounts for around half of the shooting deaths. 
+
+# Modeling Data
+
+## Model total shooting incidents and victim race, sex, and age group
+
+Multivariate linear regression is used to model the number of shooting incidents by victim race, sex, and age group. This analysis would find which demographics is significantly more likely to be victims of shooting incidents. P-values and Confidence intervals are calculated for the effects of victim race, sex and age group to the number of shooting incidents. The model fitting method is shown below with the model summary.
+
+```{r Model}
+#Fit the model
+mod<-lm(Shooting~VIC_RACE+VIC_SEX+VIC_AGE_GROUP, data = nypd_vic_demo)
+summary(mod)
+```
+
+### Summarize the model
+
+A summary table was made to better visualize the model results. 
+
+```{r Summary_model, warning=FALSE,message = FALSE}
+mod %>%
+  tbl_regression(intercept = T,
+                 estimate_fun = function(x) style_sigfig(x, digits = 3),
+                 pvalue_fun   = function(x) style_pvalue(x, digits = 3),
+                 label  = list(VIC_RACE ~ "Victim Race",
+                               VIC_SEX   ~ "Victim Sex",
+                               VIC_AGE_GROUP ~ "Victim Age group")) %>%
+  add_global_p(keep = T) %>% 
+  modify_caption("Linear regression results for total shooting incidents vs.
+                 victim race, sex, and age group")
+```
+
+The model shows that the number of non-Hispanic Black victims are significantly higher than other races/ethnicities ($p=0.001$). 
+
+The number of male victims are significantly higher than female ($p=0.014$). 
+
+There are no significant differences between the number of shooting victims in age groups ($p>0.05$). 
+
+
+# Conclusion
+
+* Non-Hispanic Black male victims have a significantly higher number than other groups in shooting incidents ($p<0.05$) in NYC from 2006 to 2023. This suggests that non-Hispanic Black men are more vulnerable to gun violence. This result could be explained by the systemic racial inequities in America. As a result of systemic racism, black men are more affected by poverty, less access to healthcare, and education. This causes them to be more likely to be victims of shooting incidents.
+
+* Total shooting incidents and deaths is highest in Brooklyn, followed by Bronx, Queens, Manhattan, and Staten Island from 2006 to 2023. This shows that gun violence is disproportionally spread across NYC. The results reflect the differences in wealth level and safety of different areas in NYC.
+
+This project have given us insights of the distribution of gun violence across NYC and which group is more affected by it.
+
+# Bias Identification
+
+## Personal biases
+
+* I have been to NYC and know about the differences in socioeconomic status and safety in the areas. Therefore, I have bias on where there are more shooting incidents and deaths. I expected the number of incidents to be highest in Bronx and Queens because these boroughs are known to have higher poverty rate.
+  * I have mitigated this bias by performing analysis showing the shooting incidents by borough.
+
+* I also have bias on the victim demographics. From my history and social understanding, Black and Hispanic people suffer from lower socioeconomic status than other groups. This couls make them more vulnerable to shooting incidents.  
+  * I have used this bias to make sense of my data model instead of interpreting it with a colorblind approach.
+
+## Data biases
+
+* Not every shooting incidents in NYC was documented in the data set. The data set only contains the shooting that were reported to the police.
+
+* Identifying victims' races, sexes, and age group might contain some errors. This is because because victims were identified by the police. Some people might be mixed-race.
+
+
+
+

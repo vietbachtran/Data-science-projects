@@ -1,0 +1,241 @@
+---
+title: "COVID-19 CASE FATALITY IN DIFFERENT CONTINENTS"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(fuzzyjoin)
+library(stringdist)
+library(scales)
+library(lsmeans)
+library(gtsummary)
+```
+
+# Project goals
+
+The COVID-19 pandemic started in 2019 has caused tremendous impact on public health and the economics around the world. It is estimated that the pandemic caused over 100 trillion dollars in the US alone. The pandemic also put hundreds of thousands people's health at risk and caused more than 6 millions deaths worldwide. 
+
+Even though vaccinations have reduced the infection rate, it is important to study the trend and distribution of the disease to better prepare for future outbreaks. Therefore, in this project, I want to analyze the world's COVID-19 data to find the association between confirmed cases and deaths between continents. My hypothesis is that the pandemic affected continents differently, which resulted in higher case fatality rate in some parts of the world. 
+
+This analysis would give us a insight on the trend of this disease and which part of the world is more vulnerable to it. The results from this project would build a foundation for future research on different factors causing high fatality rate and how to prepare for future outbreaks.
+
+# Import Covid data
+
+This data set is created by John Hopkins University from different government sources. The data is available for public use in their Github. The data recorded the number of confirmed COVID-19 cases and deaths from January 2020 to March 2023.
+
+```{r import_data, message=FALSE}
+#Enter the links for data sets
+url_in="https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+csv_link=c("time_series_covid19_confirmed_global.csv",  "time_series_covid19_deaths_global.csv")
+urls<-str_c(url_in,csv_link)
+
+#Import data
+Global_cases<-read_csv(urls[1])
+Global_deaths<-read_csv(urls[2])
+
+```
+
+
+# Tidy and transform data
+
+I compiled the cases data and deaths data to create a Global cases and deaths data set. I also added the population for different countries and regions to the data set for further analysis. Details are below.
+
+```{r Tidy_data_global, message=FALSE}
+#Global cases data
+Global_cases<-Global_cases %>% pivot_longer(cols = -('Province/State': Long),names_to = "dates", values_to = "cases") %>% select('Province/State','Country/Region',dates,cases)
+
+#Global deaths data
+Global_deaths<-Global_deaths %>% pivot_longer(cols = -('Province/State': Long),names_to = "dates", values_to = "deaths") %>% select('Province/State','Country/Region',dates,deaths)
+
+#Combine cases and deaths
+Global<-Global_cases %>% full_join(Global_deaths) %>% rename(Country_Region= `Country/Region`,
+                                                             Province_State=`Province/State`) %>%
+  mutate(dates=mdy(dates))
+
+#Combine province state to country
+Global<-Global %>% unite("Combined_Key", c(Province_State,Country_Region), sep = ", ",na.rm = TRUE, remove = FALSE)
+
+#Add population data
+uid<-read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv") %>%
+  select(c(Province_State,Country_Region,Population)) %>%
+  drop_na(Population)
+
+#Joining population data to covid data
+Global<-Global %>% 
+  inner_join(uid, by=c("Province_State","Country_Region"))
+
+```
+
+## Assign countries to continents
+
+I imported publicly available data listing countries and their continents. I used this data to assign countries to continents in the global cases and deaths data. Details are below.
+
+```{r countries_continents, message=FALSE}
+#Import the countries and continents data
+conti_url="https://raw.githubusercontent.com/dbouquin/IS_608/master/NanosatDB_munging/Countries-Continents.csv"
+conti=read_csv(conti_url)
+
+#Assign countries to continents
+#Match the continents to the countries
+Global<-conti %>% 
+  fuzzy_right_join(.,Global, by = c(Country = "Country_Region"),match_fun = str_detect) 
+
+#Remove unassigned countries and duplicates
+Global<-Global %>% 
+  mutate(dist = stringdist(Country_Region,Country)) %>% 
+  group_by(Country_Region) %>%                    
+  mutate(exact = any(dist == 0)) %>% 
+  filter(!exact | dist == 0) %>%        
+  ungroup() %>%
+  select(-c(dist,exact,Country))
+```
+
+
+## Find total cases and deaths per day in each continent
+
+Finally, I grouped countries and regions by continents to find the total of confirmed cases and deaths per day in each continent.
+
+```{r total_continents, message=FALSE}
+#Create data frame
+Global_by_conti<-Global %>%
+  group_by(Continent,dates) %>%
+  summarize(cases=sum(cases),deaths=sum(deaths),Population=sum(Population)) %>%
+  mutate(deaths_per_mill=deaths*1000000/Population) %>%
+  select(Continent,dates,cases,deaths,Population,deaths_per_mill) %>%
+  ungroup()
+
+```
+
+
+# Visualize data
+
+## Total COVID-19 cases and deaths by continent
+
+Firstly, I showed the total number of confirm cases and deaths in different continents below. This would help us visualize the what continents have higher number of cases and deaths. These plots would also show us the trend of disease over the time. 
+
+```{r Plot_total_cases_deaths,fig.show="hold", out.width="50%"}
+
+par(mar = c(4, 4, .1, .1))
+
+#Plot covid cases
+Global_by_conti %>%
+  ggplot(aes(x=dates, y=cases))+
+  geom_line(aes(color= Continent))+
+  geom_point(aes(color= Continent))+
+  scale_y_continuous(labels = unit_format(unit = "Millions", scale = 1e-6))+
+  xlab("Years")+
+  ylab("Total number of cases")+
+  labs(color= "Continent",title = "Total cases of COVID-19 by continents")
+
+#Plot covid deaths
+Global_by_conti %>%
+  ggplot(aes(x=dates, y=deaths))+
+  geom_line(aes(color= Continent))+
+  geom_point(aes(color= Continent))+
+  scale_y_continuous(labels = unit_format(unit = "Millions", scale = 1e-6))+
+  xlab("Years")+
+  ylab("Total number of deaths")+
+  labs(color= "Continent",title = "Total deaths of COVID-19 by continents")
+
+```
+
+
+## Deaths per million by continents
+
+I calculated the deaths per million as the number of deaths over the population times million. This would show the mortality rate for COVID-19 over the time in different continents. This visualization suggests which continents are more affected by this disease and have higher mortality rate. 
+
+```{r Plot_death_per_mill}
+
+#Plot deaths per million
+Global_by_conti %>%
+  ggplot(aes(x=dates, y=deaths_per_mill))+
+  geom_line(aes(color= Continent))+
+  geom_point(aes(color= Continent))+
+  #scale_y_continuous(labels = unit_format(unit = "Millions", scale = 1e-6))+
+  xlab("Years")+
+  ylab("Deaths per million")+
+  labs(color= "Continent",title = "COVID-19 Deaths per million by continents")
+
+```
+
+# Modeling the total number of deaths and confirmed cases by continents
+
+Multiple linear regression with interaction is used to model the number of deaths by the number of cases, adjsted for continents. This model would find if the association between deaths and confirmed cases is different in continents. The analysis would suggest which continents have higher cases fatality rate and where infected patients have higher risk of death. The model is fitted below. 2-way ANOVA is used as significant test for model's results.
+
+```{r Model}
+mod <- lm(deaths ~ cases*Continent, data = Global_by_conti)
+anova(mod)
+
+# Obtain slopes
+mod_list <- lstrends(mod, "Continent", var="cases")
+mod_list
+
+# Compare slopes by pairs
+pairs(mod_list)
+
+```
+
+## Summarize the model
+
+I created a table to summarize the model below. I also showed the slope of the fitted line between deaths and cases in different continents. This slope would show the correlation of deaths and confirmed cases. The larger the slope, the more deaths by cases. Therefore, we can find continents with stronger positive correlation between deaths and cases.
+
+```{r model_summary}
+#Summarize the model
+mod %>%
+  tbl_regression(intercept = T,
+                 estimate_fun = function(x) style_sigfig(x, digits = 3),
+                 pvalue_fun   = function(x) style_pvalue(x, digits = 3)) %>%
+  add_global_p(keep = T) %>% 
+  modify_caption("Linear regression model for total deaths vs.
+                 confirmed cases by continents")
+
+# The correlation between deaths and cases in different continents
+plot(mod_list)+ggplot2::xlab("The correlation between deaths and cases")
+
+```
+
+I also showed the best fitted line between deaths and COVID-19 cases for continents. This plot would help us visualize the above linear regression model. In this plot, a steep slope would suggest the continent have more deaths per cases (cases fatality rate), and COVID-19 patients are more vulnerable to death.
+
+```{r visualize_model, message=FALSE}
+
+Global_by_conti %>% ggplot(aes(x=cases,y=deaths,color=Continent))+
+  geom_point()+
+  geom_smooth(method = "lm", fill = NA,fullrange = TRUE,linetype="dashed")+
+  labs(title = "Best fitted lines for deaths vs. cases by continents")+
+  xlab("COVID-19 Cases")+
+  ylab("Deaths")
+
+```
+
+
+# Conclusion
+
+* The total number of confirmed COVID-19 cases until 03/2023 is the highest in Europe, followed by Asia, North America, and South America. Oceania and Africa have the lowest number of confirmed cases. However, the total number of COVID-19 deaths followed a different trend. Asia has the highest number of deaths, followed by Europe, North America, and South America. Oceania and Africa also have the lowest number of deaths.
+
+* South America has the highest deaths per millions compared to other continents. This suggests that the mortality rate of COVID-19 is the highest in this continent. The general population in South America have higher risk of deaths from this disease. Followed South America are Europe and North America with high deaths per millions. Oceania, Africa, and Asia have lower deaths per millions, in which the Asia have the lowest mortality rate. This means that the population in Oceania, Africa, and Asia have lower risk of deaths from COVID-19.
+
+* The linear regression model suggests that the association between deaths and confirmed COVID-19 cases is significantly different in continents ($p<0.001$). This result aligns with my prediction that the pandemic affected continents differently and in some places, patients with COVID-19 are more vulnerable to deaths. Further analysis shows that South America and Africa have the strongest positive correlation between deaths and number of cases. The association between deaths and positive cases is not significantly different in these 2 continents ($p>0.05$). This result might be caused by the high number of low and middle income countries in theses continents. These countries have faced with poverty, malnutrition, low access to health care, and inadequate heath care facilities. COVID-19 patients in these regions might have lower heath status and other comorbidities. This puts them at a higher risk of death and lower recovery rate.
+
+* North America has the third strongest correlation between deaths and confirmed cases. This can be explained by unequal heath care access in this continent. While a percentage of the population have high socioeconomic status and access to health care, the rest are more vulnerable when infected with COVID-19. The lack of social distancing and quarantine policies also might contribute to high cases fatality rate. Another problem in this region is the insufficient health care staffs and facilities to take care of patients.
+
+* Followed North America is Asia and Europe. Between the 2 continents, Europe has the lower association between deaths and cases ($p<0.0001$). COVID-19 patients in Europe have lower risk of deaths because most countries in this region are high income and developed. Their health care systems suffered less stress during the pandemic. Most European countries also made swift actions in passing strict social distancing policies, which helped prevented the wide disease spread.
+
+* Oceania has the lowest case fatality rate compared to other continents ($p<0.0001$). This result can be explained by the location of these countries. All of Oceanian countries are islands separated from other parts of the world. Their governments took advantage of this geographic factor and imposed lockdown as well as limiting international travels. This helped them remained a low infection and fatality rates. Thanks to fast actions from governments, the stress on their health care systems is reduced. Therefore, COVID-19 patients received better care and have lower fatality rate.
+
+* This project has showed the past trend of COVID-19 case fatality rate in different continents. Further research can look at factors that contributed to this trend, so that policymakers can prepare for future pandemic or outbreak.
+
+# Possible biases
+
+* This project have some limitations. The data set I used might suffer from selection bias because it doesn't include all the countries across the world. Because the data was compiled from different sources, some of them might be less reliable than others. We know that the number of cases and deaths were self-reported by countries, so the results might be less dependable. The number of COVID-19 cases might be underrepresented because some countries have lower effort for COVID-19 testing and a lot of patients are asymptomatic. Despite the limitations, this project is crucial to improve our prevention and preparation for future epidemics.
+
+
+
+
+
+
